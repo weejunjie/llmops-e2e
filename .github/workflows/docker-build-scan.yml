@@ -1,4 +1,4 @@
-name: CI - Build, Scan, and Push Docker Image
+name: CI - Build, Scan, Deploy to Kind
 
 on:
   push:
@@ -12,10 +12,8 @@ env:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
@@ -26,23 +24,22 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and push image
+      - name: Build & push image
         uses: docker/build-push-action@v6
         with:
           context: ./
           file: ./Dockerfile
           push: true
-          tags: junjiewee/fastapi-app:latest
+          tags: ${{ env.DOCKER_REPO }}
 
   trivy-scan:
     needs: build-and-push
     runs-on: ubuntu-latest
-
     steps:
-      - name: Run Trivy scan on image
+      - name: Trivy scan
         uses: aquasecurity/trivy-action@0.24.0
         with:
-          image-ref: junjiewee/fastapi-app:latest
+          image-ref: ${{ env.DOCKER_REPO }}
           format: table
           exit-code: "0"
           severity: HIGH,CRITICAL
@@ -50,31 +47,24 @@ jobs:
   deploy:
     needs: trivy-scan
     runs-on: ubuntu-latest
-    continue-on-error: true
-
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up kubectl
-        uses: azure/setup-kubectl@v4
+      - name: Set up Kind (Kubernetes in Docker)
+        uses: engineerd/setup-kind@v0.9.0
+        with:
+          version: v0.21.0
 
-      - name: Configure kubeconfig (Minikube)
+      - name: Load Docker image into Kind
         run: |
-          mkdir -p "$HOME/.kube"
-          echo "${{ secrets.KUBECONFIG }}" > "$HOME/.kube/config"
+          kind load docker-image ${{ env.DOCKER_REPO }}
 
-      - name: Display cluster info (will fail for Minikube)
+      - name: Deploy to Kind cluster
         run: |
-          kubectl cluster-info || echo "Minikube is not reachable from GitHub Actions."
-          kubectl get nodes || echo "Cannot list nodes."
-
-      - name: Deploy to Minikube
-        run: |
-          kubectl apply -f deployment.yaml || echo "Deployment failed (expected for Minikube)."
-          kubectl apply -f service.yaml || echo "Service deploy failed (expected for Minikube)."
+          kubectl apply -f deployment.yaml
+          kubectl apply -f service.yaml
 
       - name: Show deployed resources
         run: |
-          kubectl get deploy || echo "Cannot list deployments."
-          kubectl get svc || echo "Cannot list services."
+          kubectl get deploy
+          kubectl get svc
