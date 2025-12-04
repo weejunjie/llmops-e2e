@@ -69,7 +69,7 @@ jobs:
     needs: build-scan-push
 
     steps:
-      # 1️⃣ Checkout repository
+      # 1️⃣ Checkout code
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -77,29 +77,37 @@ jobs:
       - name: Set up Minikube
         uses: medyagh/setup-minikube@master
 
-      # 3️⃣ Apply Kubernetes manifests
-      - name: Apply K8s manifests
+      # 3️⃣ Deploy manifests
+      - name: Apply Kubernetes manifests
         run: |
           kubectl apply -f deployment.yaml
           kubectl apply -f service.yaml
-          kubectl rollout status deployment/gpt-huggingface
+
+      # 4️⃣ Wait for rollout (with debug fallback)
+      - name: Wait for deployment rollout
+        run: |
+          echo "⏳ Waiting for rollout..."
+          kubectl rollout status deployment/gpt-huggingface --timeout=120s || (
+            echo "❌ Rollout failed, printing debug info..."
+            kubectl get pods -o wide
+            kubectl describe pods
+            kubectl logs -l app=gpt-huggingface --tail=50
+            exit 1
+          )
+
+      # 5️⃣ Get final deployment and service info
+      - name: Verify K8s status
+        run: |
           kubectl get deploy
           kubectl get svc
 
-      # 4️⃣ Install kube-score
+      # 6️⃣ Install kube-score
       - name: Install kube-score
         run: |
           curl -L https://github.com/zegl/kube-score/releases/latest/download/kube-score_1.17.0_linux_amd64.tar.gz -o kube-score.tar.gz
           tar -xzf kube-score.tar.gz
           sudo mv kube-score /usr/local/bin/
 
-      # 5️⃣ Run kube-score static analysis
+      # 7️⃣ Run kube-score analysis
       - name: Run kube-score
         run: kube-score score --output-format ci deployment.yaml service.yaml
-
-      # 6️⃣ Upload kube-score result
-      - name: Upload kube-score report
-        uses: actions/upload-artifact@v4
-        with:
-          name: kube-score-report
-          path: kube-score.txt
