@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
         - name: gptcontainer
-          image: junjiewee/llmsecops-fastapi:latest
+          image: junjiewee/fastapi-app:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 8000
