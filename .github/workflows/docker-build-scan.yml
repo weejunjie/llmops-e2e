@@ -51,16 +51,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Kind (Kubernetes in Docker)
-        uses: engineerd/setup-kind@v0
-        with:
-          version: v0.21.0
-
-      - name: Load Docker image into Kind
+      - name: Install k3d
         run: |
-          kind load docker-image ${{ env.DOCKER_REPO }}
+          curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+          k3d version
 
-      - name: Deploy to Kind cluster
+      - name: Create k3d cluster
+        run: |
+          k3d cluster create ci-cluster --agents 1 --wait
+          kubectl cluster-info
+
+      - name: Load Docker image into k3d
+        run: |
+          k3d image import ${{ env.DOCKER_REPO }} --cluster ci-cluster
+
+      - name: Deploy to k3d cluster
         run: |
           kubectl apply -f deployment.yaml
           kubectl apply -f service.yaml
