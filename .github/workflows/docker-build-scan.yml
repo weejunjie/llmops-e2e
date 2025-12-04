@@ -5,9 +5,9 @@ on:
     branches: [main]
 
 env:
-  IMAGE_NAME: llmsecops-fastapi
+  IMAGE_NAME: fastapi-app
   IMAGE_TAG: latest
-  DOCKER_REPO: junjiewee/llmsecops-fastapi
+  DOCKER_REPO: junjiewee/fastapi-app:latest
 
 jobs:
   build-and-push:
@@ -32,7 +32,7 @@ jobs:
           context: ./
           file: ./Dockerfile
           push: true
-          tags: fastapi-app:latest
+          tags: junjiewee/fastapi-app:latest
 
   trivy-scan:
     needs: build-and-push
