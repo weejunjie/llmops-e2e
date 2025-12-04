@@ -71,8 +71,8 @@ jobs:
 
       - name: Deploy to Kubernetes
         run: |
-          kubectl apply -f k8s/deployment.yaml || echo "Deployment failed (expected if cluster is local-only)."
-          kubectl apply -f k8s/service.yaml || echo "Service deploy failed (expected if cluster is local-only)."
+          kubectl apply -f deployment.yaml || echo "Deployment failed (expected if cluster is local-only)."
+          kubectl apply -f service.yaml || echo "Service deploy failed (expected if cluster is local-only)."
 
       - name: Show deployed resources
         run: |
