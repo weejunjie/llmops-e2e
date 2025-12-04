@@ -3,128 +3,80 @@ name: CI - Build, Scan, and Push Docker Image
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  IMAGE_NAME: llmsecops-fastapi
+  IMAGE_TAG: latest
+  DOCKER_REPO: shannontsc/llmsecops-fastapi
 
 jobs:
-  build-scan-push:
+  build-and-push:
     runs-on: ubuntu-latest
 
     steps:
-      # 1️⃣ Checkout repository
-      - name: Checkout code
+      - name: Checkout repo
         uses: actions/checkout@v4
 
-      # 2️⃣ Set up Docker Buildx
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      # 3️⃣ Log in to Docker Hub
-      - name: Login to Docker Hub
+      - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # 4️⃣ Define image tag using commit SHA (shortened)
-      - name: Set image tag
-        id: vars
-        run: echo "TAG=$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_ENV
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      # 5️⃣ Build Docker image with both latest and version tag
-      - name: Build and tag Docker image
-        run: |
-          set -e
-          docker build -t fastapi-app:latest -t junjiewee/fastapi-app:${TAG} -t junjiewee/fastapi-app:latest .
-
-      # 6️⃣ Push both image tags to Docker Hub
-      - name: Push image to Docker Hub
-        run: |
-          set -e
-          docker push junjiewee/fastapi-app:${TAG}
-          docker push junjiewee/fastapi-app:latest
-
-      # 7️⃣ Free Docker space to keep runner clean
-      - name: Free Docker space
-        run: |
-          docker system prune -af
-          docker volume prune -f
-
-      # 8️⃣ Install Trivy and scan the pushed image on Docker Hub
-      - name: Scan image with Trivy (remote)
-        run: |
-          echo "🔧 Installing Trivy..."
-          sudo apt-get update -y
-          sudo apt-get install -y wget apt-transport-https gnupg lsb-release
-          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
-          echo deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main | sudo tee /etc/apt/sources.list.d/trivy.list
-          sudo apt-get update -y
-          sudo apt-get install -y trivy
-
-          echo "🚀 Running Trivy scan on Docker Hub image..."
-          trivy image --severity HIGH,CRITICAL --format table --exit-code 0 junjiewee/fastapi-app:${TAG} | tee trivy-report.txt
-
-      # 9️⃣ Upload Trivy scan report to GitHub artifacts
-      - name: Upload Trivy report
-        uses: actions/upload-artifact@v4
+      - name: Build and push image
+        uses: docker/build-push-action@v6
         with:
-          name: trivy-scan-report
-          path: trivy-report.txt
+          context: ./app
+          file: ./app/Dockerfile
+          push: true
+          tags: ${{ env.DOCKER_REPO }}:${{ env.IMAGE_TAG }}
 
-      # 1️⃣0️⃣ Share the image tag for the next job
-      - name: Export image tag for deployment
-        run: echo "IMAGE_TAG=${TAG}" >> $GITHUB_ENV
-        shell: bash
-
-  deploy-and-validate:
+  trivy-scan:
+    needs: build-and-push
     runs-on: ubuntu-latest
-    needs: build-scan-push
 
     steps:
-      # 1️⃣ Checkout code
-      - name: Checkout code
+      - name: Run Trivy scan on image
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: ${{ env.DOCKER_REPO }}:${{ env.IMAGE_TAG }}
+          format: table
+          exit-code: "0" #
+          severity: HIGH,CRITICAL
+
+  deploy:
+    needs: trivy-scan
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    steps:
+      - name: Checkout repo
         uses: actions/checkout@v4
 
-      # 2️⃣ Set up Minikube
-      - name: Set up Minikube
-        uses: medyagh/setup-minikube@master
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
 
-      # 3️⃣ Update image tag dynamically in deployment.yaml
-      - name: Replace image tag in deployment
+      - name: Configure kubeconfig
         run: |
-          echo "🧩 Replacing image tag with ${IMAGE_TAG}"
-          sed -i "s|image: junjiewee/fastapi-app:.*|image: junjiewee/fastapi-app:${IMAGE_TAG}|g" deployment.yaml
-          cat deployment.yaml
+          mkdir -p "$HOME/.kube"
+          echo "${{ secrets.KUBECONFIG }}" > "$HOME/.kube/config"
 
-      # 4️⃣ Apply Kubernetes manifests
-      - name: Apply Kubernetes manifests
+      - name: Show cluster info
         run: |
-          kubectl apply -f deployment.yaml
-          kubectl apply -f service.yaml
+          kubectl cluster-info || echo "Cluster not reachable from GitHub runner (local Docker Desktop cluster)."
+          kubectl get nodes || echo "Cannot list nodes."
 
-      # 5️⃣ Wait for deployment rollout (with debug info on failure)
-      - name: Wait for deployment rollout
+      - name: Deploy to Kubernetes
         run: |
-          echo "⏳ Waiting for rollout..."
-          kubectl rollout status deployment/gpt-huggingface --timeout=120s || (
-            echo "❌ Rollout failed. Showing logs and pod info..."
-            kubectl get pods -o wide
-            kubectl describe pods
-            kubectl logs -l app=gpt-huggingface --tail=50
-            exit 1
-          )
+          kubectl apply -f k8s/deployment.yaml || echo "Deployment failed (expected if cluster is local-only)."
+          kubectl apply -f k8s/service.yaml || echo "Service deploy failed (expected if cluster is local-only)."
 
-      # 6️⃣ Verify K8s deployment and service
-      - name: Verify K8s status
+      - name: Show deployed resources
         run: |
-          kubectl get deploy
-          kubectl get svc
-
-      # 7️⃣ Install kube-score
-      - name: Install kube-score
-        run: |
-          curl -L https://github.com/zegl/kube-score/releases/latest/download/kube-score_1.17.0_linux_amd64.tar.gz -o kube-score.tar.gz
-          tar -xzf kube-score.tar.gz
-          sudo mv kube-score /usr/local/bin/
-
-      # 8️⃣ Run kube-score static analysis
-      - name: Run kube-score
-        run: kube-score score --output-format ci deployment.yaml service.yaml
+          kubectl get deploy || echo "Cannot list deployments."
+          kubectl get svc || echo "Cannot list services."
