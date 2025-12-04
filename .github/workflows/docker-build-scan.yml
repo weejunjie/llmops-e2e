@@ -42,7 +42,7 @@ jobs:
       - name: Run Trivy scan on image
         uses: aquasecurity/trivy-action@0.24.0
         with:
-          image-ref: fastapi-app:latest
+          image-ref: junjiewee/fastapi-app:latest
           format: table
           exit-code: "0"
           severity: HIGH,CRITICAL
