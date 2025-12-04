@@ -24,26 +24,31 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # 4️⃣ Build Docker image
-      - name: Build Docker image
+      # 4️⃣ Define image tag using commit SHA (shortened)
+      - name: Set image tag
+        id: vars
+        run: echo "TAG=$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_ENV
+
+      # 5️⃣ Build Docker image with both latest and version tag
+      - name: Build and tag Docker image
         run: |
           set -e
-          docker build -t fastapi-app:latest .
+          docker build -t fastapi-app:latest -t junjiewee/fastapi-app:${TAG} -t junjiewee/fastapi-app:latest .
 
-      # 5️⃣ Push to Docker Hub
+      # 6️⃣ Push both image tags to Docker Hub
       - name: Push image to Docker Hub
         run: |
           set -e
-          docker tag fastapi-app:latest junjiewee/fastapi-app:latest
+          docker push junjiewee/fastapi-app:${TAG}
           docker push junjiewee/fastapi-app:latest
 
-      # 6️⃣ Clean up Docker space to free disk
+      # 7️⃣ Free Docker space to keep runner clean
       - name: Free Docker space
         run: |
           docker system prune -af
           docker volume prune -f
 
-      # 7️⃣ Install and run Trivy vulnerability scan (remote scan on Docker Hub image)
+      # 8️⃣ Install Trivy and scan the pushed image on Docker Hub
       - name: Scan image with Trivy (remote)
         run: |
           echo "🔧 Installing Trivy..."
@@ -55,14 +60,19 @@ jobs:
           sudo apt-get install -y trivy
 
           echo "🚀 Running Trivy scan on Docker Hub image..."
-          trivy image --severity HIGH,CRITICAL --format table --exit-code 0 junjiewee/fastapi-app:latest | tee trivy-report.txt
+          trivy image --severity HIGH,CRITICAL --format table --exit-code 0 junjiewee/fastapi-app:${TAG} | tee trivy-report.txt
 
-      # 8️⃣ Upload Trivy scan report as GitHub Action artifact
+      # 9️⃣ Upload Trivy scan report to GitHub artifacts
       - name: Upload Trivy report
         uses: actions/upload-artifact@v4
         with:
           name: trivy-scan-report
           path: trivy-report.txt
+
+      # 1️⃣0️⃣ Share the image tag for the next job
+      - name: Export image tag for deployment
+        run: echo "IMAGE_TAG=${TAG}" >> $GITHUB_ENV
+        shell: bash
 
   deploy-and-validate:
     runs-on: ubuntu-latest
@@ -77,37 +87,44 @@ jobs:
       - name: Set up Minikube
         uses: medyagh/setup-minikube@master
 
-      # 3️⃣ Deploy manifests
+      # 3️⃣ Update image tag dynamically in deployment.yaml
+      - name: Replace image tag in deployment
+        run: |
+          echo "🧩 Replacing image tag with ${IMAGE_TAG}"
+          sed -i "s|image: junjiewee/fastapi-app:.*|image: junjiewee/fastapi-app:${IMAGE_TAG}|g" deployment.yaml
+          cat deployment.yaml
+
+      # 4️⃣ Apply Kubernetes manifests
       - name: Apply Kubernetes manifests
         run: |
           kubectl apply -f deployment.yaml
           kubectl apply -f service.yaml
 
-      # 4️⃣ Wait for rollout (with debug fallback)
+      # 5️⃣ Wait for deployment rollout (with debug info on failure)
       - name: Wait for deployment rollout
         run: |
           echo "⏳ Waiting for rollout..."
           kubectl rollout status deployment/gpt-huggingface --timeout=120s || (
-            echo "❌ Rollout failed, printing debug info..."
+            echo "❌ Rollout failed. Showing logs and pod info..."
             kubectl get pods -o wide
             kubectl describe pods
             kubectl logs -l app=gpt-huggingface --tail=50
             exit 1
           )
 
-      # 5️⃣ Get final deployment and service info
+      # 6️⃣ Verify K8s deployment and service
       - name: Verify K8s status
         run: |
           kubectl get deploy
           kubectl get svc
 
-      # 6️⃣ Install kube-score
+      # 7️⃣ Install kube-score
       - name: Install kube-score
         run: |
           curl -L https://github.com/zegl/kube-score/releases/latest/download/kube-score_1.17.0_linux_amd64.tar.gz -o kube-score.tar.gz
           tar -xzf kube-score.tar.gz
           sudo mv kube-score /usr/local/bin/
 
-      # 7️⃣ Run kube-score analysis
+      # 8️⃣ Run kube-score static analysis
       - name: Run kube-score
         run: kube-score score --output-format ci deployment.yaml service.yaml
